@@ -1,17 +1,18 @@
 [package]
 name = "mimalloc"
-version = "0.1.48"
+version = "0.2.0"
 authors = [
     "Octavian Oncescu <octavonce@gmail.com>",
     "Vincent Rouillé <vincent@speedy37.fr>",
     "Thom Chiovoloni <chiovolonit@gmail.com>",
+    "Matthew McDade <nvllmnd@pm.me>",
 ]
-edition = "2018"
-repository = "https://github.com/purpleprotocol/mimalloc_rust"
+edition = "2024"
+repository = "https://github.com/nvllmnd/mimalloc_rs.git"
 keywords = ["mimalloc", "allocator", "encrypted-heap", "performance"]
 categories = ["memory-management", "api-bindings"]
 description = "Performance and security oriented drop-in allocator"
-license = "MIT"
+license = "GPL-3.0"
 readme = "README.md"
 
 [workspace]
@@ -22,13 +23,14 @@ members = [
 ]
 
 [badges]
-travis-ci = { repository = "purpleprotocol/mimalloc_rust" }
+travis-ci = { repository = "nvllmnd/mimalloc_rs" }
 
 [dependencies]
 libmimalloc-sys = { path = "libmimalloc-sys", version = "0.1.44", default-features = false }
 
 [features]
-default = []
+default = ["libmimalloc-sys/v3", "extended", "arena"]
+arena = ["libmimalloc-sys/arena"]
 secure = ["libmimalloc-sys/secure"]
 override = ["libmimalloc-sys/override"]
 debug = ["libmimalloc-sys/debug"]

@@ -1,6 +1,7 @@
 // Copyright 2019 Octavian Oncescu
 
 #![no_std]
+#![feature(allocator_api)]
 
 //! A drop-in global allocator wrapper around the [mimalloc](https://github.com/microsoft/mimalloc) allocator.
 //! Mimalloc is a general purpose, performance oriented allocator built by Microsoft.
@@ -25,6 +26,7 @@
 //! mimalloc = { version = "*", features = ["secure"] }
 //! ```
 
+extern crate alloc;
 extern crate libmimalloc_sys as ffi;
 
 #[cfg(feature = "extended")]
@@ -48,28 +50,59 @@ pub struct MiMalloc;
 unsafe impl GlobalAlloc for MiMalloc {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        mi_malloc_aligned(layout.size(), layout.align()) as *mut u8
+        unsafe { mi_malloc_aligned(layout.size(), layout.align()) as *mut u8 }
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        mi_zalloc_aligned(layout.size(), layout.align()) as *mut u8
+        unsafe { mi_zalloc_aligned(layout.size(), layout.align()) as *mut u8 }
     }
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        mi_free(ptr as *mut c_void);
+        unsafe { mi_free(ptr as *mut c_void) };
     }
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        mi_realloc_aligned(ptr as *mut c_void, new_size, layout.align()) as *mut u8
+        unsafe { mi_realloc_aligned(ptr as *mut c_void, new_size, layout.align()) as *mut u8 }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
+    use crate::extended::Heap;
+
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct Buf<const S: usize>([u8; S]);
+
+    impl<const S: usize> Buf<S> {
+        pub const fn new() -> Self {
+            Self([0u8; S])
+        }
+    }
+
+    #[test]
+    fn heap_resizes_vec() {
+        let h = Heap::new();
+        let mut v = Vec::with_capacity_in(4, h.clone());
+        let bs = [Buf::<255>::new(); 255];
+
+        // try to cause vec to grow memory as much as possible
+        v.extend_from_slice(&bs[0..50]);
+        v.extend_from_slice(&bs[50..150]);
+        v.extend_from_slice(&bs[150..175]);
+        v.extend_from_slice(&bs[175..200]);
+        v.extend_from_slice(&bs[200..]);
+
+        let v2 = v.clone();
+
+        assert_eq!(v, v2);
+    }
 
     #[test]
     fn it_frees_allocated_memory() {

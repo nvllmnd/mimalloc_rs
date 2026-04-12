@@ -641,6 +641,7 @@ extern "C" {
 ///     mi::mi_heap_delete(h);
 /// }
 /// ```
+#[derive(Debug, Clone, Copy)]
 pub enum mi_heap_t {}
 
 /// An area of heap space contains blocks of a single size.
@@ -685,6 +686,12 @@ pub type mi_block_visit_fun = Option<
 extern "C" {
     /// Create a new heap that can be used for allocation.
     pub fn mi_heap_new() -> *mut mi_heap_t;
+
+    pub fn mi_heap_new_ex(
+        heap_tag: i32,
+        allow_destroy: bool,
+        arena_id: mi_arena_id_t,
+    ) -> *mut mi_heap_t;
 
     /// Delete a previously allocated heap.
     ///
