@@ -1,7 +1,12 @@
 use alloc::{alloc::Allocator, ffi::CString, sync::Arc};
 
 use crate::MiMalloc;
-use core::{alloc::Layout, ffi::c_void, ptr::NonNull, str::FromStr};
+use core::{
+    alloc::{GlobalAlloc, Layout},
+    ffi::c_void,
+    ptr::NonNull,
+    str::FromStr,
+};
 
 impl MiMalloc {
     /// Get the mimalloc version.
@@ -641,5 +646,20 @@ mod test {
         let p = Box::new_in(Point { x: 100, y: 50 }, h.by_ref());
 
         assert_eq!(*p, Point { x: 100, y: 50 });
+    }
+}
+
+unsafe impl GlobalAlloc for Heap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        self.allocate(layout)
+            .map(|p| p.as_ptr() as *mut u8)
+            .unwrap_or(core::ptr::null_mut())
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let Some(ptr) = NonNull::new(ptr) else {
+            return;
+        };
+        unsafe { self.deallocate(ptr, layout) };
     }
 }

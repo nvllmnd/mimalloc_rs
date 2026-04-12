@@ -32,9 +32,13 @@ extern crate libmimalloc_sys as ffi;
 #[cfg(feature = "extended")]
 mod extended;
 
+use alloc::alloc::Allocator;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::c_void;
+use core::ptr::NonNull;
 use ffi::*;
+
+use crate::extended::Heap;
 
 /// Drop-in mimalloc global allocator.
 ///
@@ -66,6 +70,98 @@ unsafe impl GlobalAlloc for MiMalloc {
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         unsafe { mi_realloc_aligned(ptr as *mut c_void, new_size, layout.align()) as *mut u8 }
+    }
+}
+
+unsafe impl Allocator for MiMalloc {
+    fn allocate(
+        &self,
+        layout: Layout,
+    ) -> Result<core::ptr::NonNull<[u8]>, alloc::alloc::AllocError> {
+        let Some(ptr) = (unsafe { NonNull::new(self.alloc(layout)) }) else {
+            return Err(alloc::alloc::AllocError);
+        };
+        let sl = NonNull::slice_from_raw_parts(ptr, layout.size());
+        Ok(sl)
+    }
+
+    unsafe fn deallocate(&self, ptr: core::ptr::NonNull<u8>, layout: Layout) {
+        unsafe {
+            self.dealloc(ptr.as_ptr() as *mut _, layout);
+        }
+    }
+
+    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
+        let Some(ptr) = (unsafe { NonNull::new(self.alloc_zeroed(layout)) }) else {
+            return Err(alloc::alloc::AllocError);
+        };
+        let sl = NonNull::slice_from_raw_parts(ptr, layout.size());
+        Ok(sl)
+    }
+
+    unsafe fn grow(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
+        core::debug_assert!(
+            new_layout.size() >= old_layout.size(),
+            "`new_layout.size()` must be greater than or equal to `old_layout.size()`"
+        );
+
+        let ptr = unsafe { self.realloc(ptr.as_ptr() as *mut _, new_layout, new_layout.size()) };
+        let ptr = NonNull::new(ptr).ok_or(alloc::alloc::AllocError)?;
+        let sl = NonNull::slice_from_raw_parts(ptr, new_layout.size());
+        Ok(sl)
+    }
+
+    unsafe fn grow_zeroed(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
+        core::debug_assert!(
+            new_layout.size() >= old_layout.size(),
+            "`new_layout.size()` must be greater than or equal to `old_layout.size()`"
+        );
+
+        let ptr = unsafe {
+            mi_rezalloc_aligned(
+                ptr.as_ptr() as *mut _,
+                new_layout.size(),
+                new_layout.align(),
+            )
+            .cast::<u8>()
+        };
+        let ptr = NonNull::new(ptr).ok_or(alloc::alloc::AllocError)?;
+        let sl = NonNull::slice_from_raw_parts(ptr, new_layout.size());
+        Ok(sl)
+    }
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: Layout,
+        new_layout: Layout,
+    ) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
+        core::debug_assert!(
+            new_layout.size() <= old_layout.size(),
+            "`new_layout.size()` must be smaller than or equal to `old_layout.size()`"
+        );
+
+        let ptr = unsafe {
+            mi_realloc_aligned(
+                ptr.as_ptr() as *mut _,
+                new_layout.size(),
+                new_layout.align(),
+            )
+            .cast::<u8>()
+        };
+        let ptr = NonNull::new(ptr).ok_or(alloc::alloc::AllocError)?;
+        let sl = NonNull::slice_from_raw_parts(ptr, new_layout.size());
+        Ok(sl)
     }
 }
 
