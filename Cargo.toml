@@ -1,6 +1,6 @@
 [package]
-name = "mimalloc"
-version = "0.2.0"
+name = "mi_malloc"
+version = "0.3.1"
 authors = [
     "Octavian Oncescu <octavonce@gmail.com>",
     "Vincent Rouillé <vincent@speedy37.fr>",
@@ -22,14 +22,14 @@ members = [
     "test-override-with-dylib",
 ]
 
-[badges]
-travis-ci = { repository = "nvllmnd/mimalloc_rs" }
+# [badges]
+# travis-ci = { repository = "nvllmnd/mimalloc_rs" }
 
 [dependencies]
-libmimalloc-sys = { path = "libmimalloc-sys", version = "0.1.44", default-features = false }
+libmimalloc-sys = { path = "libmimalloc-sys", version = "0.2.0", default-features = false }
 
 [features]
-default = ["libmimalloc-sys/v3", "extended", "arena"]
+default = ["v3", "extended", "arena", "override", "debug", "secure", "local_dynamic_tls"]
 arena = ["libmimalloc-sys/arena"]
 secure = ["libmimalloc-sys/secure"]
 override = ["libmimalloc-sys/override"]

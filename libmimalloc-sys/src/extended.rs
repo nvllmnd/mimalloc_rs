@@ -8,7 +8,7 @@ use cty::{c_char, c_int, c_long, c_ulonglong};
 /// in the `_small` family ([`mi_malloc_small`], [`mi_zalloc_small`], etc).
 pub const MI_SMALL_SIZE_MAX: usize = 128 * core::mem::size_of::<*mut c_void>();
 
-extern "C" {
+unsafe extern "C" {
     /// Allocate `count` items of `size` length each.
     ///
     /// Returns `null` if `count * size` overflows or on out-of-memory.
@@ -552,7 +552,7 @@ pub const _mi_option_last: mi_option_t = 37;
 #[cfg(feature = "v3")]
 pub const _mi_option_last: mi_option_t = 43;
 
-extern "C" {
+unsafe extern "C" {
     // Note: mi_option_{enable,disable} aren't exposed because they're redundant
     // and because of https://github.com/microsoft/mimalloc/issues/266.
 
@@ -683,7 +683,7 @@ pub type mi_block_visit_fun = Option<
     ) -> bool,
 >;
 
-extern "C" {
+unsafe extern "C" {
     /// Create a new heap that can be used for allocation.
     pub fn mi_heap_new() -> *mut mi_heap_t;
 
@@ -1024,6 +1024,8 @@ extern "C" {
 
 #[cfg(test)]
 mod tests {
+    use crate::mi_malloc;
+
     use super::*;
 
     #[test]
