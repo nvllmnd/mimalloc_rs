@@ -1,8 +1,10 @@
 use alloc::{alloc::Allocator, ffi::CString, sync::Arc};
+use mi::{mi_expand, mi_good_size, mi_stats_print};
 
 use crate::MiMalloc;
 use core::{
     alloc::{GlobalAlloc, Layout},
+    arch::x86_64::_mm512_mask_min_epi16,
     ffi::c_void,
     ptr::NonNull,
     str::FromStr,
@@ -13,7 +15,7 @@ impl MiMalloc {
     ///
     /// For mimalloc version 1.8.6, this will return 186.
     pub fn version(&self) -> u32 {
-        unsafe { ffi::mi_version() as u32 }
+        unsafe { mi::mi_version() as u32 }
     }
 
     /// Return the amount of available bytes in a memory block.
@@ -22,13 +24,57 @@ impl MiMalloc {
     /// `ptr` must point to a memory block allocated by mimalloc, or be null.
     #[inline]
     pub unsafe fn usable_size(&self, ptr: *const u8) -> usize {
-        unsafe { ffi::mi_usable_size(ptr as *const c_void) }
+        unsafe { mi::mi_usable_size(ptr as *const c_void) }
+    }
+
+    /// Return the used allocation size.
+    ///
+    /// Returns the size `n` that will be allocated, where `n >= size`.
+    ///
+    /// Generally, `mi_usable_size(mi_malloc(size)) == mi_good_size(size)`. This
+    /// can be used to reduce internal wasted space when allocating buffers for
+    /// example.
+    ///
+    /// See [`mi_usable_size`](crate::mi_usable_size).
+    #[inline]
+    pub fn good_size(size: usize) -> usize {
+        unsafe { mi_good_size(size) }
+    }
+
+    /// Print the main statistics.
+    ///
+    /// Ignores the passed in argument, and outputs to the registered output
+    /// function or stderr by default.
+    ///
+    #[cfg(feature = "debug")]
+    pub fn print_stats() {
+        unsafe {
+            mi_stats_print(core::ptr::null_mut());
+        }
+    }
+
+    /// Try to re-allocate memory to `newsize` bytes _in place_.
+    ///
+    /// Returns null on out-of-memory or if the memory could not be expanded in
+    /// place. On success, returns the same pointer as `p`.
+    ///
+    /// If `newsize` is larger than the original `size` allocated for `p`, the
+    /// bytes after `size` are uninitialized.
+    ///
+    /// If null is returned, the original pointer is not freed.
+    ///
+    /// Note: Conceptually, this is a realloc-like which returns null if it
+    /// would be forced to reallocate memory and copy. In practice it's
+    /// equivalent testing against [`mi_usable_size`](crate::mi_usable_size).
+    pub fn expand(ptr: *mut u8, new_size: usize) -> *mut u8 {
+        let ptr = unsafe { mi_expand(ptr.cast::<core::ffi::c_void>(), new_size) };
+        ptr.cast::<u8>()
     }
 }
 
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct Heap(Arc<ffi::mi_heap_t, HeapManager>);
+pub struct Heap(Arc<mi::mi_heap_t, HeapManager>);
 
 #[derive(Debug, Clone, Copy)]
 struct HeapManager;
@@ -37,7 +83,7 @@ const PLACEHOLDER: [u8; 1] = [255];
 
 unsafe impl alloc::alloc::Allocator for HeapManager {
     fn allocate(&self, _layout: Layout) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
-        let h = unsafe { ffi::mi_heap_new() };
+        let h = unsafe { mi::mi_heap_new() };
         let p = h.cast::<u8>();
         let sl = NonNull::slice_from_raw_parts(NonNull::new(p).unwrap(), 1);
         Ok(sl)
@@ -45,9 +91,9 @@ unsafe impl alloc::alloc::Allocator for HeapManager {
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: Layout) {
         // ensure this is a heap we are deleting
-        debug_assert!(unsafe { ffi::mi_is_in_heap_region(ptr.as_ptr() as *const _) });
-        let h = ptr.cast::<ffi::mi_heap_t>();
-        unsafe { ffi::mi_heap_delete(h.as_ptr() as *mut _) }
+        debug_assert!(unsafe { mi::mi_is_in_heap_region(ptr.as_ptr() as *const _) });
+        let h = ptr.cast::<mi::mi_heap_t>();
+        unsafe { mi::mi_heap_delete(h.as_ptr() as *mut _) }
     }
 
     fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
@@ -90,28 +136,37 @@ unsafe impl alloc::alloc::Allocator for HeapManager {
 }
 
 impl Heap {
+    #[cfg(feature = "arena")]
+    /// Create a [Heap] that only allocates in the specified [Arena]
+    pub fn new_in_arena(arena: &Arena) -> Self {
+        let h = unsafe { mi::mi_heap_new_in_arena(arena.id()) };
+        let ptr = NonNull::new(h)
+            .expect("Call to C Function: mi_heap_new_in_arena returned unexpected nullptr!");
+        unsafe { Heap::from_raw(ptr) }
+    }
+
     pub fn new() -> Self {
-        let h = unsafe { ffi::mi_heap_new() };
-        // NOTE: here we pass in [HeapManager] as an allocator to ensure that when this [Arc] gets dropped,
-        // the pointer it 'owns' is casted to a [ffi::mi_heap_t] and passed to [ffi::mi_heap_delete]
-        let p = unsafe { Arc::from_raw_in(h, HeapManager) };
-        Self(p)
+        let h = unsafe { mi::mi_heap_new() };
+        let ptr =
+            NonNull::new(h).expect("Call to C Function: mi_heap_new returned unexpected nullptr!");
+
+        unsafe { Self::from_raw(ptr) }
     }
 
     #[inline]
-    pub fn as_ptr(&self) -> NonNull<ffi::mi_heap_t> {
+    pub fn as_ptr(&self) -> NonNull<mi::mi_heap_t> {
         NonNull::from_ref(self.0.as_ref())
     }
 
     #[inline]
-    pub fn as_mut_ptr(&self) -> *mut ffi::mi_heap_t {
+    pub fn as_mut_ptr(&self) -> *mut mi::mi_heap_t {
         core::ptr::from_ref(self.0.as_ref()) as *mut _
     }
 
     pub fn malloc(&self, layout: Layout) -> Option<NonNull<[u8]>> {
         let size = layout.size();
         let align = layout.align();
-        let ptr = unsafe { ffi::mi_heap_malloc_aligned(self.as_mut_ptr(), size, align) };
+        let ptr = unsafe { mi::mi_heap_malloc_aligned(self.as_mut_ptr(), size, align) };
         let Some(ptr) = NonNull::new(ptr) else {
             return None;
         };
@@ -123,7 +178,7 @@ impl Heap {
     pub fn zalloc(&self, layout: Layout) -> Option<NonNull<[u8]>> {
         let size = layout.size();
         let align = layout.align();
-        let ptr = unsafe { ffi::mi_heap_zalloc_aligned(self.as_mut_ptr(), size, align) };
+        let ptr = unsafe { mi::mi_heap_zalloc_aligned(self.as_mut_ptr(), size, align) };
         let Some(ptr) = NonNull::new(ptr) else {
             return None;
         };
@@ -136,7 +191,7 @@ impl Heap {
         let size = layout.size();
         let align = layout.align();
 
-        let ptr = unsafe { ffi::mi_heap_calloc_aligned(self.as_mut_ptr(), count, size, align) };
+        let ptr = unsafe { mi::mi_heap_calloc_aligned(self.as_mut_ptr(), count, size, align) };
         let Some(ptr) = NonNull::new(ptr) else {
             return None;
         };
@@ -147,10 +202,10 @@ impl Heap {
 
     pub fn malloc_small(&self, layout: Layout) -> Option<NonNull<[u8]>> {
         let size = layout.size();
-        if size >= ffi::MI_SMALL_SIZE_MAX {
+        if size >= mi::MI_SMALL_SIZE_MAX {
             None
         } else {
-            let ptr = unsafe { ffi::mi_heap_malloc_small(self.as_mut_ptr(), size) };
+            let ptr = unsafe { mi::mi_heap_malloc_small(self.as_mut_ptr(), size) };
             let Some(ptr) = NonNull::new(ptr) else {
                 return None;
             };
@@ -161,7 +216,7 @@ impl Heap {
 
     pub fn realloc(&self, ptr: NonNull<u8>, new_layout: Layout) -> Option<NonNull<[u8]>> {
         let ptr = unsafe {
-            ffi::mi_heap_realloc_aligned(
+            mi::mi_heap_realloc_aligned(
                 self.as_mut_ptr(),
                 ptr.as_ptr() as *mut _,
                 new_layout.size(),
@@ -177,7 +232,7 @@ impl Heap {
 
     pub fn rezalloc(&self, ptr: NonNull<u8>, new_layout: Layout) -> Option<NonNull<[u8]>> {
         let ptr = unsafe {
-            ffi::mi_heap_rezalloc_aligned(
+            mi::mi_heap_rezalloc_aligned(
                 self.as_mut_ptr(),
                 ptr.as_ptr() as *mut _,
                 new_layout.size(),
@@ -200,7 +255,7 @@ impl Heap {
         let size = layout.size();
         let align = layout.align();
         let ptr = unsafe {
-            ffi::mi_heap_recalloc_aligned(
+            mi::mi_heap_recalloc_aligned(
                 self.as_mut_ptr(),
                 ptr.as_ptr() as *mut _,
                 new_count,
@@ -215,9 +270,9 @@ impl Heap {
         Some(sl)
     }
 
-    /// wraps [ffi::mi_heap_strndup]. Keep in mind since
+    /// wraps [mi::mi_heap_strndup]. Keep in mind since
     /// this requires converting a rust [str] into a null-terminated [*const i8] c-style string
-    /// in order to be able to pass given [&str] to [ffi::mi_heap_strndup]. It looks like
+    /// in order to be able to pass given [&str] to [mi::mi_heap_strndup]. It looks like
     /// [CString] tries to avoid extra allocations if it can, but thats not gauranteed and
     /// this mehod might end up allocating 2 copies of a string. One of them is freed and the string that
     /// is returned is now owned by the caller, but its good to keep all this in mind when using this method.
@@ -227,7 +282,7 @@ impl Heap {
     pub fn strdup(&self, s: &str) -> Option<NonNull<str>> {
         let cstr = CString::new(s).ok()?;
         let ptr =
-            unsafe { ffi::mi_heap_strndup(self.as_mut_ptr(), cstr.as_ptr() as *const _, s.len()) };
+            unsafe { mi::mi_heap_strndup(self.as_mut_ptr(), cstr.as_ptr() as *const _, s.len()) };
         let Some(ptr) = NonNull::new(ptr) else {
             return None;
         };
@@ -236,22 +291,42 @@ impl Heap {
         Some(res)
     }
 
-    /// wraps [ffi::mi_heap_get_backing]
+    /// wraps [mi::mi_heap_get_backing]
     #[inline]
-    pub fn get_backing() -> NonNull<ffi::mi_heap_t> {
-        let h = unsafe { ffi::mi_heap_get_backing() };
+    pub fn get_backing() -> NonNull<mi::mi_heap_t> {
+        let h = unsafe { mi::mi_heap_get_backing() };
         NonNull::new(h).expect("mi_heap_get_backing returned nullptr!")
     }
 
-    /// wraps [ffi::mi_heap_get_default]
+    /// wraps [mi::mi_heap_get_default]
     #[inline]
-    pub fn get_default() -> NonNull<ffi::mi_heap_t> {
-        let h = unsafe { ffi::mi_heap_get_default() };
+    pub fn get_default() -> NonNull<mi::mi_heap_t> {
+        let h = unsafe { mi::mi_heap_get_default() };
         NonNull::new(h).expect("mi_heap_get_default returned nullptr!")
+    }
+
+    /// Creates a new instance of [Heap] from an already created
+    /// [NonNull] [mi::mi_heap_t];
+    ///
+    /// # Safety
+    ///
+    /// Caller MUST ensure that the pointer parameter passed to this
+    /// function does not already belong to another different [Heap] or [ScopedHeap], as this
+    /// would cause a double free/delete.
+    /// To be safe, please pass the pointer returned from [mi::mi_heap_new] or [mi::mi_heap_new_in_arena]
+    /// immediately to this function and nowhere else
+    pub unsafe fn from_raw(ptr: NonNull<mi::mi_heap_t>) -> Self {
+        // # Safety
+        //
+        // here we pass in [HeapManager] as an allocator to ensure that when this [Arc] gets dropped,
+        // the pointer it 'owns' is casted to a [ffi::mi_heap_t] and passed to [ffi::mi_heap_delete]
+        let p = unsafe { Arc::from_raw_in(ptr.as_ptr(), HeapManager) };
+        Self(p)
     }
 }
 
 unsafe impl core::marker::Sync for Heap {}
+
 unsafe impl core::marker::Send for Heap {}
 
 unsafe impl Allocator for Heap {
@@ -259,8 +334,8 @@ unsafe impl Allocator for Heap {
         self.malloc(layout).ok_or(alloc::alloc::AllocError)
     }
 
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        unsafe { ffi::mi_free(ptr.as_ptr() as *mut _) }
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: Layout) {
+        unsafe { mi::mi_free(ptr.as_ptr() as *mut _) }
     }
 
     fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
@@ -270,7 +345,7 @@ unsafe impl Allocator for Heap {
     unsafe fn grow(
         &self,
         ptr: NonNull<u8>,
-        old_layout: Layout,
+        _old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
         self.realloc(ptr, new_layout)
@@ -280,7 +355,7 @@ unsafe impl Allocator for Heap {
     unsafe fn grow_zeroed(
         &self,
         ptr: NonNull<u8>,
-        old_layout: Layout,
+        _old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
         self.rezalloc(ptr, new_layout)
@@ -290,7 +365,7 @@ unsafe impl Allocator for Heap {
     unsafe fn shrink(
         &self,
         ptr: NonNull<u8>,
-        old_layout: Layout,
+        _old_layout: Layout,
         new_layout: Layout,
     ) -> Result<NonNull<[u8]>, alloc::alloc::AllocError> {
         self.realloc(ptr, new_layout)
@@ -307,18 +382,27 @@ unsafe impl Allocator for Heap {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
-pub struct ScopedHeap(*mut ffi::mi_heap_t);
+pub struct ScopedHeap(*mut mi::mi_heap_t);
 
 impl ScopedHeap {
     pub fn new() -> Self {
-        let h = unsafe { ffi::mi_heap_new() };
+        let h = unsafe { mi::mi_heap_new() };
         Self(h)
+    }
+
+    /// Create a [ScopedHeap] that only allocates in the specified [Arena]
+    #[cfg(feature = "arena")]
+    pub fn new_in_arena(arena: &Arena) -> Self {
+        let h = unsafe { mi::mi_heap_new_in_arena(arena.id()) };
+        let ptr = NonNull::new(h)
+            .expect("Call to C Function: mi_heap_new_in_arena returned unexpected nullptr!");
+        Self(ptr.as_ptr())
     }
 
     pub fn zalloc(&self, layout: Layout) -> Option<NonNull<[u8]>> {
         let size = layout.size();
         let align = layout.align();
-        let ptr = unsafe { ffi::mi_heap_zalloc_aligned(self.0, size, align) };
+        let ptr = unsafe { mi::mi_heap_zalloc_aligned(self.0, size, align) };
         let Some(ptr) = NonNull::new(ptr) else {
             return None;
         };
@@ -330,7 +414,7 @@ impl ScopedHeap {
     pub fn malloc(&self, layout: Layout) -> Option<NonNull<[u8]>> {
         let size = layout.size();
         let align = layout.align();
-        let ptr = unsafe { ffi::mi_heap_malloc_aligned(self.0, size, align) };
+        let ptr = unsafe { mi::mi_heap_malloc_aligned(self.0, size, align) };
         let Some(ptr) = NonNull::new(ptr) else {
             return None;
         };
@@ -343,7 +427,7 @@ impl ScopedHeap {
         let size = layout.size();
         let align = layout.align();
 
-        let ptr = unsafe { ffi::mi_heap_calloc_aligned(self.0, count, size, align) };
+        let ptr = unsafe { mi::mi_heap_calloc_aligned(self.0, count, size, align) };
         let Some(ptr) = NonNull::new(ptr) else {
             return None;
         };
@@ -354,10 +438,10 @@ impl ScopedHeap {
 
     pub fn malloc_small(&self, layout: Layout) -> Option<NonNull<[u8]>> {
         let size = layout.size();
-        if size >= ffi::MI_SMALL_SIZE_MAX {
+        if size >= mi::MI_SMALL_SIZE_MAX {
             None
         } else {
-            let ptr = unsafe { ffi::mi_heap_malloc_small(self.0, size) };
+            let ptr = unsafe { mi::mi_heap_malloc_small(self.0, size) };
             let Some(ptr) = NonNull::new(ptr) else {
                 return None;
             };
@@ -368,7 +452,7 @@ impl ScopedHeap {
 
     pub fn realloc(&self, ptr: NonNull<u8>, new_layout: Layout) -> Option<NonNull<[u8]>> {
         let ptr = unsafe {
-            ffi::mi_heap_realloc_aligned(
+            mi::mi_heap_realloc_aligned(
                 self.0,
                 ptr.as_ptr() as *mut _,
                 new_layout.size(),
@@ -384,7 +468,7 @@ impl ScopedHeap {
 
     pub fn rezalloc(&self, ptr: NonNull<u8>, new_layout: Layout) -> Option<NonNull<[u8]>> {
         let ptr = unsafe {
-            ffi::mi_heap_rezalloc_aligned(
+            mi::mi_heap_rezalloc_aligned(
                 self.0,
                 ptr.as_ptr() as *mut _,
                 new_layout.size(),
@@ -407,7 +491,7 @@ impl ScopedHeap {
         let size = layout.size();
         let align = layout.align();
         let ptr = unsafe {
-            ffi::mi_heap_recalloc_aligned(self.0, ptr.as_ptr() as *mut _, new_count, size, align)
+            mi::mi_heap_recalloc_aligned(self.0, ptr.as_ptr() as *mut _, new_count, size, align)
         };
         let Some(ptr) = NonNull::new(ptr) else {
             return None;
@@ -416,9 +500,9 @@ impl ScopedHeap {
         Some(sl)
     }
 
-    /// wraps [ffi::mi_heap_strndup]. Keep in mind since
+    /// wraps [mi::mi_heap_strndup]. Keep in mind since
     /// this requires converting a rust [str] into a null-terminated [*const i8] c-style string
-    /// in order to be able to pass given [&str] to [ffi::mi_heap_strndup]. It looks like
+    /// in order to be able to pass given [&str] to [mi::mi_heap_strndup]. It looks like
     /// [CString] tries to avoid extra allocations if it can, but thats not gauranteed and
     /// this mehod might end up allocating 2 copies of a string. One of them is freed and the string that
     /// is returned is now owned by the caller, but its good to keep all this in mind when using this method.
@@ -427,7 +511,7 @@ impl ScopedHeap {
     /// in order to stay consistent with the core mimalloc api
     pub fn strdup(&self, s: &str) -> Option<NonNull<str>> {
         let cstr = CString::new(s).ok()?;
-        let ptr = unsafe { ffi::mi_heap_strndup(self.0, cstr.as_ptr() as *const _, s.len()) };
+        let ptr = unsafe { mi::mi_heap_strndup(self.0, cstr.as_ptr() as *const _, s.len()) };
         let Some(ptr) = NonNull::new(ptr) else {
             return None;
         };
@@ -436,17 +520,17 @@ impl ScopedHeap {
         Some(res)
     }
 
-    /// wraps [ffi::mi_heap_get_backing]
+    /// wraps [mi::mi_heap_get_backing]
     #[inline]
-    pub fn get_backing() -> NonNull<ffi::mi_heap_t> {
-        let h = unsafe { ffi::mi_heap_get_backing() };
+    pub fn get_backing() -> NonNull<mi::mi_heap_t> {
+        let h = unsafe { mi::mi_heap_get_backing() };
         NonNull::new(h).expect("mi_heap_get_backing returned nullptr!")
     }
 
-    /// wraps [ffi::mi_heap_get_default]
+    /// wraps [mi::mi_heap_get_default]
     #[inline]
-    pub fn get_default() -> NonNull<ffi::mi_heap_t> {
-        let h = unsafe { ffi::mi_heap_get_default() };
+    pub fn get_default() -> NonNull<mi::mi_heap_t> {
+        let h = unsafe { mi::mi_heap_get_default() };
         NonNull::new(h).expect("mi_heap_get_default returned nullptr!")
     }
 }
@@ -465,7 +549,7 @@ const fn str_from_raw_parts<'a>(ptr: *const i8, len: usize) -> &'a str {
 impl Drop for ScopedHeap {
     fn drop(&mut self) {
         unsafe {
-            ffi::mi_heap_delete(self.0);
+            mi::mi_heap_delete(self.0);
         }
     }
 }
@@ -480,7 +564,7 @@ unsafe impl alloc::alloc::Allocator for ScopedHeap {
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: Layout) {
         unsafe {
-            ffi::mi_free(ptr.as_ptr() as *mut _);
+            mi::mi_free(ptr.as_ptr() as *mut _);
         }
     }
 

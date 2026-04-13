@@ -26,10 +26,12 @@ members = [
 # travis-ci = { repository = "nvllmnd/mimalloc_rs" }
 
 [dependencies]
+anyhow = { version = "1.0.102", default-features = false }
 libmimalloc-sys = { path = "libmimalloc-sys", version = "0.2.0", default-features = false }
 
 [features]
-default = ["v3", "extended", "arena", "override", "debug", "secure", "local_dynamic_tls"]
+# default = ["v3", "extended", "arena", "override", "debug", "secure", "local_dynamic_tls"]
+default = ["extended"]
 arena = ["libmimalloc-sys/arena"]
 secure = ["libmimalloc-sys/secure"]
 override = ["libmimalloc-sys/override"]

@@ -27,18 +27,19 @@
 //! ```
 
 extern crate alloc;
-extern crate libmimalloc_sys as ffi;
+extern crate libmimalloc_sys as mi;
 
 #[cfg(feature = "extended")]
-mod extended;
+pub mod extended;
+
+#[cfg(feature = "arena")]
+pub mod arena;
 
 use alloc::alloc::Allocator;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::c_void;
 use core::ptr::NonNull;
-use ffi::*;
-
-use crate::extended::Heap;
+pub use mi::*;
 
 /// Drop-in mimalloc global allocator.
 ///

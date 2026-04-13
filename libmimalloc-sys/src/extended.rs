@@ -687,6 +687,24 @@ unsafe extern "C" {
     /// Create a new heap that can be used for allocation.
     pub fn mi_heap_new() -> *mut mi_heap_t;
 
+    ///v1,v2: Create a new heap.
+    ///
+    ///Parameters
+    ///    heap_tag	The heap tag associated with this heap; heaps only reclaim memory between heaps with the same tag.
+    ///    allow_destroy	Is mi_heap_destroy allowed? Not allowing this allows the heap to reclaim memory from terminated threads.
+    ///    arena_id	If not 0, the heap will only allocate from the specified arena.
+    ///
+    ///Returns
+    ///    A new heap or NULL on failure.
+    ///
+    /// The arena_id can be used by runtimes to allocate only in a specified pre-reserved arena.
+    /// This is used for example for a compressed pointer heap in Koka. The heap_tag enables heaps to keep objects of a
+    /// certain type isolated to heaps with that tag. This is used for example in the CPython integration.
+    ///
+    /// See also
+    ///    [mi_heap_new_in_arena] for v3
+    ///
+    #[cfg(feature = "arena")]
     pub fn mi_heap_new_ex(
         heap_tag: i32,
         allow_destroy: bool,
@@ -963,6 +981,21 @@ unsafe extern "C" {
         visitor: mi_block_visit_fun,
         arg: *mut c_void,
     ) -> bool;
+
+    #[cfg(feature = "arena")]
+    ///Return the start and size of an arena.
+    ///
+    ///Parameters
+    ///    arena_id	The arena identifier.
+    ///    size	Returned size in bytes of the (virtual) arena area.
+    ///
+    ///Returns
+    ///    base address of the arena.
+    pub unsafe fn mi_arena_area(arena_id: mi_arena_id_t, size: *mut usize) -> *mut c_void;
+
+    #[cfg(feature = "debug")]
+    #[cfg(feature = "arena")]
+    pub unsafe fn mi_debug_show_arenas();
 
     #[cfg(feature = "arena")]
     /// Create a heap that only allocates in the specified arena
